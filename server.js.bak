@@ -1,0 +1,272 @@
+// server.js
+// This script sets up an Express server to receive invoice files and
+// send them via WhatsApp using the Baileys library.
+
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers } = require('@whiskeysockets/baileys');
+const { Boom } = require('@hapi/boom');
+const express = require('express');
+const cors = require('cors');
+const multer = require('multer');
+const QRCode = require('qrcode');
+const path = require('path');
+const fs = require('fs');
+const http = require('http');
+const socketIO = require('socket.io');
+
+// --- Express Server Setup ---
+const app = express();
+app.use(cors()); // Allow all origins for now. Restrict in production if needed.
+const server = http.createServer(app);
+const io = socketIO(server, {
+    cors: {
+        origin: '*', // Allow all origins for development
+        methods: ['GET', 'POST'],
+        allowedHeaders: ['Content-Type'],
+        credentials: true
+    }
+});
+const port = process.env.PORT || process.env.NODEJS_PORT || 3000;
+const ip = process.env.IP || process.env.NODEJS_IP || '0.0.0.0';
+
+// Configure Multer for file uploads
+const upload = multer({ dest: 'uploads/' }); // Files will be stored in the 'uploads' directory
+
+// Enable CORS for development (you might want to restrict this in production)
+app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*'); // Allow requests from any origin
+    res.header('Access-Control-Allow-Methods', 'GET, POST');
+    res.header('Access-Control-Allow-Headers', 'Content-Type');
+    next();
+});
+
+app.use(express.json()); // To parse JSON request bodies
+
+// --- REST API for external web apps ---
+// 1. WhatsApp status endpoint
+app.get('/wa-status', (req, res) => {
+    // Check if socket exists, is connected, and has authenticated user
+    if (sock && sock.user && sock.user.id) {
+        res.json({ status: 'Connected', user: sock.user });
+    } else {
+        res.json({ status: 'waiting' });
+    }
+});
+
+// 2. WhatsApp QR endpoint
+app.get('/wa-qr', (req, res) => {
+    if (latestQR) {
+        res.json({ qr: latestQR });
+    } else {
+        res.status(404).json({ error: 'No QR available' });
+    }
+});
+
+// 3. WhatsApp send message endpoint
+const uploadSingle = multer({ dest: 'uploads/' }).single('file');
+app.post('/wa-send', (req, res) => {
+    uploadSingle(req, res, async function (err) {
+        if (err) {
+            return res.status(500).json({ error: 'File upload failed.' });
+        }
+        let { to, message } = req.body;
+        if (!sock || !sock.user) {
+            if (latestQR) {
+                console.log('[API] WhatsApp not connected, returning QR for reconnection');
+                return res.status(503).json({ qr: latestQR, error: 'WhatsApp not connected. Scan QR to reconnect.' });
+            }
+            return res.status(503).json({ error: 'WhatsApp not connected and no QR available.' });
+        }
+        if (!to) {
+            return res.status(400).json({ error: 'Missing "to"' });
+        }
+        // Auto-format local numbers to WhatsApp JID for Sri Lanka
+        to = to.trim();
+        if (/^0\d{9}$/.test(to)) {
+            to = '94' + to.slice(1);
+        }
+        to = to.replace(/[^0-9@.]/g, '');
+        if (!to.endsWith('@s.whatsapp.net')) {
+            to = to + '@s.whatsapp.net';
+        }
+        try {
+            if (req.file) {
+                const filePath = req.file.path;
+                const fileBuffer = require('fs').readFileSync(filePath);
+                await sock.sendMessage(to, {
+                    document: fileBuffer,
+                    mimetype: req.file.mimetype,
+                    fileName: req.file.originalname,
+                    caption: message || undefined,
+                });
+                require('fs').unlinkSync(filePath);
+                res.json({ success: true, file: req.file.originalname });
+            } else if (message) {
+                await sock.sendMessage(to, { text: message });
+                res.json({ success: true });
+            } else {
+                res.status(400).json({ error: 'No message or file provided.' });
+            }
+        } catch (err) {
+            res.status(500).json({ error: err.message });
+        }
+    });
+});
+
+app.use(express.static(__dirname)); // Serve static files
+
+// --- Baileys WhatsApp Client Setup ---
+let sock; // Global variable to hold the Baileys socket connection
+let latestQR = null; // Store the latest QR code for new clients
+
+async function connectToWhatsApp() {
+    try {
+        // Load session from 'auth_info_baileys' directory
+        const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
+
+        sock = makeWASocket({
+            auth: state,
+            printQRInTerminal: false, // Disable terminal QR
+            browser: Browsers.macOS('Desktop'),
+            connectTimeoutMs: 60000,
+            retryRequestDelayMs: 5000,
+            maxRetries: 3,
+        });
+
+
+    // Event listener for connection updates
+    sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect, qr } = update;
+
+        if (qr) {
+            console.log('New QR Code received - check the web interface');
+            latestQR = qr;
+            io.emit('qr', qr);
+            io.emit('status', 'Please scan QR code');
+            io.emit('open-qr-popup'); // Instruct clients to open popup
+        }
+
+        if (connection === 'close') {
+    const statusCode = lastDisconnect?.error?.output?.statusCode;
+    console.log('Connection closed with status:', statusCode);
+    // Always inform clients immediately
+    io.emit('status', 'waiting');
+    if (latestQR) {
+        io.emit('qr', latestQR);
+    }
+    if (statusCode === 401) {
+        // Unauthorized: clear auth and try reconnecting, don't require manual restart
+        console.log('401 Unauthorized. Clearing auth and retrying...');
+        if (fs.existsSync('auth_info_baileys')) {
+            fs.rmSync('auth_info_baileys', { recursive: true, force: true });
+            console.log('Auth info cleared for 401. Will attempt reconnect and issue new QR.');
+        }
+        setTimeout(() => connectToWhatsApp(), 2000); // Try reconnecting quickly
+    } else if (statusCode === DisconnectReason.loggedOut || statusCode === 440) {
+        // Session conflict or logged out: clear auth, require manual restart
+        console.log('Session conflict or logged out. Clearing auth and requiring manual restart.');
+        if (fs.existsSync('auth_info_baileys')) {
+            fs.rmSync('auth_info_baileys', { recursive: true, force: true });
+            console.log('Auth info cleared. Please restart the server and scan new QR code.');
+        }
+    } else {
+        // Other disconnects: try reconnecting
+        console.log('Attempting to reconnect...');
+        setTimeout(() => connectToWhatsApp(), 5000);
+    }
+} else if (connection === 'open') {
+            if (sock.user) {
+                console.log('WhatsApp connection opened and authenticated!');
+                io.emit('status', 'Connected');
+            } else {
+                console.log('WhatsApp connection opened, but not authenticated yet.');
+                io.emit('status', 'Waiting for authentication...');
+            }
+        }
+    });
+
+    // Event listener for credentials update (e.g., after scanning QR)
+    sock.ev.on('creds.update', saveCreds);
+
+    // Event listener for messages (optional, but good for debugging)
+    sock.ev.on('messages.upsert', async ({ messages }) => {
+        console.log('Received messages:', JSON.stringify(messages, undefined, 2));
+        // You can add logic here to respond to messages if needed
+    });
+    } catch (error) {
+        console.error('Error in connectToWhatsApp:', error);
+        // Wait 5 seconds before retrying
+        setTimeout(() => connectToWhatsApp(), 5000);
+    }
+}
+
+// Ensure 'uploads' directory exists
+if (!fs.existsSync('uploads')) {
+    fs.mkdirSync('uploads');
+}
+
+// Connect to WhatsApp when the server starts
+connectToWhatsApp();
+
+// --- API Endpoint to Send Invoice ---
+// This endpoint expects a file upload and a mobile number.
+// The `upload.single('invoiceFile')` middleware handles the file upload.
+app.post('/send-invoice', upload.single('invoiceFile'), async (req, res) => {
+    const mobileNumber = req.body.mobileNumber;
+    const invoiceFile = req.file;
+
+    // Validate inputs
+    if (!mobileNumber || !invoiceFile) {
+        return res.status(400).json({ error: 'Mobile number and invoice file are required.' });
+    }
+
+    // Ensure mobile number is in the correct WhatsApp format (e.g., '2345678901@s.whatsapp.net')
+    // Remove any non-digit characters and append '@s.whatsapp.net'
+    const jid = `${mobileNumber.replace(/[^0-9]/g, '')}@s.whatsapp.net`;
+    console.log(`Attempting to send invoice to: ${jid}`);
+
+    if (!sock || !sock.user) {
+        console.error('WhatsApp client not connected. Please scan QR code.');
+        return res.status(503).json({ error: 'WhatsApp client not ready. Please wait for connection or scan QR code.' });
+    }
+
+    try {
+        const filePath = path.join(__dirname, invoiceFile.path); // Path to the uploaded file
+        const fileBuffer = fs.readFileSync(filePath); // Read the file into a buffer
+
+        // Send the document (invoice)
+        await sock.sendMessage(jid, {
+            document: fileBuffer,
+            mimetype: invoiceFile.mimetype, // Get mimetype from Multer
+            fileName: invoiceFile.originalname, // Original file name
+            caption: 'Here is your invoice. Thank you for your business!', // Optional caption
+        });
+
+        // Clean up: delete the temporary file after sending
+        fs.unlinkSync(filePath);
+        console.log(`Invoice sent successfully to ${jid}`);
+        res.status(200).json({ message: 'Invoice sent successfully!' });
+
+    } catch (error) {
+        console.error('Error sending invoice:', error);
+        // If file exists, try to delete it even if send fails
+        if (invoiceFile && fs.existsSync(path.join(__dirname, invoiceFile.path))) {
+             fs.unlinkSync(path.join(__dirname, invoiceFile.path));
+        }
+        res.status(500).json({ error: 'Failed to send invoice.', details: error.message });
+    }
+});
+
+// Send latest QR to new clients
+io.on('connection', (socket) => {
+    if (latestQR) {
+        socket.emit('qr', latestQR);
+        socket.emit('status', 'Please scan QR code');
+    }
+});
+
+// Start the Express server
+server.listen(port, ip, () => {
+    console.log(`Server is running on http://${ip}:${port}`);
+    console.log('Waiting for WhatsApp connection. Scan QR code if prompted.');
+});
+

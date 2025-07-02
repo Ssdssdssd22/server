@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Open QR Popup</title>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script>
+        function openPopup() {
+            const w = 400, h = 500;
+            const left = (screen.width - w) / 2;
+            const top = (screen.height - h) / 2;
+            window.open('qr.html', 'WhatsAppQR', `width=${w},height=${h},left=${left},top=${top},resizable=yes,scrollbars=no`);
+        }
+        window.onload = openPopup;
+        // Listen for server event
+        window.onload = function() {
+            openPopup();
+            const socket = io();
+            socket.on('open-qr-popup', () => {
+                openPopup();
+            });
+        }
+    </script>
+</head>
+<body>
+    <p>If the QR popup did not open, <a href="qr.html" target="WhatsAppQR" onclick="openPopup();return false;">click here</a>.</p>
+</body>
+</html>

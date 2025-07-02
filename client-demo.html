@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>WhatsApp Integration Demo</title>
+  <script src="https://cdn.rawgit.com/davidshimjs/qrcodejs/gh-pages/qrcode.min.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; background: #f0f2f5; }
+    #container { background: white; max-width: 400px; margin: 2rem auto; padding: 2rem; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+    #qrcode { margin: 1rem 0; }
+    #status { margin: 1rem 0; font-weight: bold; }
+    #send-form { margin-top: 2rem; }
+    label { display: block; margin-bottom: 0.5rem; }
+    input, textarea { width: 100%; margin-bottom: 1rem; padding: 0.5rem; border-radius: 5px; border: 1px solid #ccc; }
+    button { padding: 0.75rem 1.5rem; background: #25d366; color: white; border: none; border-radius: 5px; font-size: 1rem; cursor: pointer; }
+    button:disabled { background: #eee; color: #aaa; }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <h2>WhatsApp Integration Demo</h2>
+    <div id="status">Checking WhatsApp status...</div>
+    <div id="qrcode"></div>
+    <form id="send-form" style="display:none;" enctype="multipart/form-data">
+      <label>To (WhatsApp or local number): <input type="text" id="to" placeholder="0773218799 or 94773218799 or 94773218799@s.whatsapp.net" required></label>
+      <label>Message: <textarea id="message" placeholder="Optional"></textarea></label>
+      <label>Attach file (PDF/image): <input type="file" id="file" name="file" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx,.xls,.xlsx,.txt,image/*,application/pdf"></label>
+      <button type="submit">Send</button>
+    </form>
+    <div id="result"></div>
+  </div>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <script>
+    const serverUrl = window.SERVER_URL || 'http://localhost:3000';
+    const statusDiv = document.getElementById('status');
+    const qrcodeDiv = document.getElementById('qrcode');
+    const sendForm = document.getElementById('send-form');
+    const resultDiv = document.getElementById('result');
+    let qrInstance = new QRCode(qrcodeDiv, { width: 256, height: 256 });
+
+    // --- Socket.IO Real-time Status ---
+    const socket = io(serverUrl);
+    let lastStatus = null;
+    socket.on('status', (status) => {
+      console.log('Status received:', status);
+      lastStatus = status;
+      
+      // Always update UI based on status
+      if (status && status.toLowerCase() === 'connected') {
+        statusDiv.textContent = 'WhatsApp Connected!';
+        qrcodeDiv.style.display = 'none';
+        sendForm.style.display = 'block';
+      } else {
+        // Any non-connected status (waiting, disconnected, etc)
+        statusDiv.textContent = 'WhatsApp not connected. Scan the QR below:';
+        qrcodeDiv.style.display = 'block';
+        sendForm.style.display = 'none';
+        
+        // Request QR if not already shown
+        fetch(serverUrl + '/wa-qr')
+          .then(res => res.json())
+          .then(qrdata => {
+            if (qrdata && qrdata.qr) {
+              qrInstance.clear();
+              qrInstance.makeCode(qrdata.qr);
+              window.latestQR = qrdata.qr;
+            }
+          })
+          .catch(() => {
+            console.log('QR not available yet');
+          });
+      }
+    });
+    socket.on('qr', (qr) => {
+      window.latestQR = qr;
+      qrcodeDiv.style.display = 'block';
+      qrInstance.clear();
+      qrInstance.makeCode(qr);
+      statusDiv.textContent = 'WhatsApp not connected. Scan the QR below:';
+      sendForm.style.display = 'none';
+    });
+
+    // --- Fallback Polling (optional, can be removed if real-time is reliable) ---
+    function checkStatus() {
+      fetch(serverUrl + '/wa-status')
+        .then(res => res.json())
+        .then(data => {
+          if (!lastStatus || (lastStatus.toLowerCase() !== 'connected' && data.status && data.status.toLowerCase() === 'connected')) {
+            // If socket missed an update, update UI
+            statusDiv.textContent = 'WhatsApp Connected!';
+            qrcodeDiv.style.display = 'none';
+            sendForm.style.display = 'block';
+          } else if (!lastStatus || (lastStatus.toLowerCase() === 'connected' && (!data.status || data.status.toLowerCase() !== 'connected'))) {
+            statusDiv.textContent = 'WhatsApp not connected. Scan the QR below:';
+            qrcodeDiv.style.display = 'block';
+            sendForm.style.display = 'none';
+            fetch(serverUrl + '/wa-qr')
+              .then(res => res.json())
+              .then(qrdata => {
+                qrInstance.clear();
+                qrInstance.makeCode(qrdata.qr);
+                window.latestQR = qrdata.qr;
+              })
+              .catch(() => {
+                qrcodeDiv.innerHTML = '<em>QR not available. Please wait...</em>';
+              });
+          }
+          setTimeout(checkStatus, 10000); // Poll every 10s as backup
+        });
+    }
+    setTimeout(checkStatus, 10000); // Start fallback polling after 10s
+
+    sendForm.addEventListener('submit', function(e) {
+      e.preventDefault();
+      const to = document.getElementById('to').value.trim();
+      const message = document.getElementById('message').value.trim();
+      const fileInput = document.getElementById('file');
+      const file = fileInput.files[0];
+      resultDiv.textContent = 'Sending...';
+      const formData = new FormData();
+      formData.append('to', to);
+      if (message) formData.append('message', message);
+      if (file) formData.append('file', file);
+      fetch(serverUrl + '/wa-send', {
+        method: 'POST',
+        body: formData
+      })
+      .then(res => res.json())
+      .then(data => {
+        if (data.status === 'sent') {
+          let msg = 'Message sent successfully!';
+          if (data.normalizedTo) {
+            msg += ` (Sent to: ${data.normalizedTo})`;
+          }
+          if (data.file) {
+            msg = `File "${data.file}" sent successfully!`;
+            if (data.normalizedTo) {
+              msg += ` (Sent to: ${data.normalizedTo})`;
+            }
+          }
+          resultDiv.textContent = msg;
+        } else {
+          let errMsg = 'Error: ' + (data.error || 'Unknown error');
+          if (data.input) {
+            errMsg += ` (Input: ${data.input})`;
+          }
+          if (data.normalized) {
+            errMsg += ` (Normalized: ${data.normalized})`;
+          }
+          if (data.details) {
+            errMsg += `\nDetails: ${data.details}`;
+          }
+          resultDiv.textContent = errMsg;
+        }
+      })
+      .catch(err => {
+        resultDiv.textContent = 'Error: ' + err;
+      });
+    });
+  </script>
+</body>
+</html>

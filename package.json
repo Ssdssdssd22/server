@@ -1,0 +1,14 @@
+{
+  "dependencies": {
+    "express": "^5.1.0",
+    "multer": "^2.0.1",
+    "pino": "^9.7.0",
+    "puppeteer": "^24.10.2",
+    "qrcode": "^1.5.4",
+    "socket.io": "^4.8.1",
+    "whatsapp-web.js": "^1.30.0"
+  },
+  "scripts": {
+    "start": "node server.js"
+  }
+}

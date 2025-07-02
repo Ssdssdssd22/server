@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WhatsApp QR Code</title>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script src="https://cdn.rawgit.com/davidshimjs/qrcodejs/gh-pages/qrcode.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f0f2f5;
+        }
+        .container {
+            background: white;
+            padding: 2rem;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+        #qrcode {
+            margin: 20px 0;
+        }
+        #status {
+            margin-top: 1rem;
+            padding: 0.5rem;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+        .connected {
+            color: #4CAF50;
+        }
+        .waiting {
+            color: #2196F3;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>WhatsApp Web Connection</h2>
+        <div id="qrcode"></div>
+        <div id="status"></div>
+    </div>
+    <script>
+        const socket = io();
+        const qrcode = new QRCode("qrcode");
+        let receivedQR = false;
+        
+        socket.on('connect', () => {
+            console.log('[qr.html] Socket connected');
+        });
+        socket.on('qr', (qr) => {
+            console.log('[qr.html] Received QR:', qr);
+            receivedQR = true;
+            qrcode.clear();
+            qrcode.makeCode(qr);
+            document.getElementById('status').textContent = 'Scan this QR with WhatsApp';
+        });
+
+        socket.on('status', (status) => {
+            const statusEl = document.getElementById('status');
+            statusEl.textContent = status;
+            if(status === 'Connected') {
+                statusEl.className = 'connected';
+                document.getElementById('qrcode').style.display = 'none';
+            } else {
+                statusEl.className = 'waiting';
+                document.getElementById('qrcode').style.display = 'block';
+            }
+        });
+
+        setTimeout(() => {
+            if (!receivedQR) {
+                document.getElementById('status').textContent = 'Waiting for QR code...';
+            }
+        }, 2000);
+    </script>
+</body>
+</html>
