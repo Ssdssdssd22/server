@@ -97,7 +97,12 @@ function initWhatsAppClient() {
 
 // --- Express Server Setup ---
 const app = express();
-app.use(cors()); // Allow all origins for now. Restrict in production if needed.
+app.use(cors({
+    origin: ['http://localhost', 'http://127.0.0.1', 'https://inventory.mrnirmal.lk'],
+    methods: ['GET', 'POST', 'OPTIONS'],
+    credentials: true,
+    allowedHeaders: ['Content-Type', 'Authorization']
+})); // Allow all origins for now. Restrict in production if needed.
 
 // Manual endpoint to reset WhatsApp session and force fresh QR
 app.post('/wa-reset', (req, res) => {
@@ -129,6 +134,7 @@ const upload = multer({
 
 // Enable CORS for development (you might want to restrict this in production)
 app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*'); // Allow requests from any origin
     res.header('Access-Control-Allow-Methods', 'GET, POST');
     res.header('Access-Control-Allow-Headers', 'Content-Type');
     next();
