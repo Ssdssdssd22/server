@@ -1,0 +1,6 @@
+2025/07/02-12:23:29.167 4574 Reusing MANIFEST C:\Users\Sampath\Desktop\server\server\.wwebjs_auth\session-inventory-wa\Default\Local Storage\leveldb/MANIFEST-000001
+2025/07/02-12:23:29.168 4574 Recovering log #4
+2025/07/02-12:23:29.169 4574 Reusing old log C:\Users\Sampath\Desktop\server\server\.wwebjs_auth\session-inventory-wa\Default\Local Storage\leveldb/000004.log 
+2025/07/02-12:32:09.254 4454 Level-0 table #8: started
+2025/07/02-12:32:09.284 4454 Level-0 table #8: 16281 bytes OK
+2025/07/02-12:32:09.286 4454 Delete type=0 #4
